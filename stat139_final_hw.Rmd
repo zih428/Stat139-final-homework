@@ -1,0 +1,264 @@
+---
+title: "STAT 139 Final Homework Exploratory Data Analysis"
+author: "Harry Hu, Changming Liu, Wendy Wang, Yixuan Li, Rongzhi Chen"
+output: pdf_document
+date: "2025-11-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+New cars vary widely in price, and buyers often care about how observable features translate into a higher or lower sticker price. In this project we study how technical characteristics of a car (such as engine power, number of cylinders, city and highway fuel economy, and popularity) and broader design choices (brand, size class, body style, fuel type, transmission, driven wheels, and number of doors) are associated with the manufacturer suggested retail price (MSRP). We focus on a linear regression model with MSRP as the outcome and these features as main effects only, so that each coefficient can be interpreted as the average difference in price associated with a one unit change in a continuous predictor or with belonging to a particular category, holding all other variables fixed. This setup allows us to quantify which car features are most strongly related to price and to compare the relative importance of performance, comfort, and branding related variables.
+
+
+## Data Sources
+We use the “Car Features and MSRP” dataset from Kaggle, originally scraped from Edmunds and Twitter. The raw data file data.csv contains 11,914 rows and 16 columns, where each row corresponds to a specific car model and each column records one attribute of that model. Our continuous variables include engine horsepower, number of cylinders, city and highway miles per gallon, popularity, and MSRP. The remaining variables are treated as categorical: make, model, model year, engine fuel type, transmission type, driven wheels, number of doors, market category, vehicle size, and vehicle style. We perform basic cleaning by removing records with “N/A” in Market.Category or “UNKNOWN” in Transmission.Type and coding all categorical variables as factors. The main effects of these continuous and categorical predictors are then used as inputs in our linear model for MSRP.
+
+data source: https://www.kaggle.com/datasets/CooperUnion/cardataset?resource=download
+
+
+```{r}
+dat <- read.csv("data.csv")
+dim(dat)
+names(dat)
+str(dat)
+```
+Our data contains 11914 rows and 16 columns, and the variable names are shown above.
+
+```{r}
+library(dplyr)
+library(knitr)
+
+# List continuous variables
+cont_vars <- c("Engine.HP", "Engine.Cylinders", 
+               "highway.MPG", "city.mpg", 
+               "Popularity", "MSRP")
+
+# Build summary table directly (no summarise -> no warning)
+cont_summary <- data.frame(
+  Variable    = cont_vars,
+  non_missing = sapply(dat[cont_vars], function(x) sum(!is.na(x))),
+  missing     = sapply(dat[cont_vars], function(x) sum(is.na(x))),
+  mean        = sapply(dat[cont_vars], function(x) mean(x, na.rm = TRUE)),
+  median      = sapply(dat[cont_vars], function(x) median(x, na.rm = TRUE)),
+  sd          = sapply(dat[cont_vars], function(x) sd(x, na.rm = TRUE)),
+  IQR         = sapply(dat[cont_vars], function(x) IQR(x, na.rm = TRUE))
+)
+
+kable(cont_summary, caption = "Summary of Continuous Variables")
+```
+Categorical variables:
+```{r}
+library(dplyr)
+library(knitr)
+library(tidyr)
+
+# Choose the variables you want to treat as categorical
+cat_vars <- c(
+  "Make",
+  "Model",
+  "Year",              # Treat year as categorical
+  "Engine.Fuel.Type",
+  "Transmission.Type",
+  "Driven_Wheels",
+  "Number.of.Doors",   # numeric but categorical-ish
+  "Market.Category",
+  "Vehicle.Size",
+  "Vehicle.Style"
+)
+
+
+topN <- 5
+
+cat_top <- dat %>%
+  # make sure all categorical vars are character (including Year, Number.of.Doors)
+  mutate(across(all_of(cat_vars), as.character)) %>%
+  select(all_of(cat_vars)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Level"
+  ) %>%
+  filter(!is.na(Level)) %>%
+  group_by(Variable, Level) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Variable) %>%
+  slice_max(n, n = topN)
+
+kable(cat_top,
+      caption = "Top 5 Levels per Categorical Variable")
+```
+
+The table above summarizes the five most frequent categories for each categorical variable. It highlights strong imbalances in several variables. For example, most vehicles have 4 doors, use regular unleaded fuel, or fall into the Compact/Midsize size classes. The presence of entries such as "N/A" in Market.Category and "UNKNOWN" in Transmission.Type also indicates possible data-quality issues that may require cleaning or standardization.
+
+```{r}
+# We drop rows whose Market.Category is N/A or Transmission.Type is UNKNOWN
+dat_clean <- dat %>%
+  filter(
+    Market.Category != "N/A",
+    Transmission.Type != "UNKNOWN"
+  )
+
+dat_clean <- dat_clean %>%
+  mutate(across(all_of(cat_vars), as.factor))
+```
+
+```{r}
+all_predictors <- c(setdiff(cont_vars, "MSRP"), cat_vars)
+
+formula_full <- as.formula(
+  paste("MSRP ~", paste(all_predictors, collapse = " + "))
+)
+
+mod_full <- lm(formula_full, data = dat_clean)
+# summary(mod_full)
+```
+
+```{r}
+# leverage points
+lev <- hatvalues(mod_full)
+mean_lev <- mean(lev)
+
+high_lev_idx <- which(lev > 2 * mean_lev)
+very_high_lev_idx <- which(lev > 3 * mean_lev)
+
+high_leverage_points <- dat[high_lev_idx, ]
+head(high_leverage_points)
+```
+
+```{r}
+# ---- Visualization: Leverage ----
+plot(
+  lev,
+  ylab = "Leverage",
+  xlab = "Observation index",
+  main = "Leverage for each observation",
+  pch = 20
+)
+abline(h = 2 * mean_lev, lty = 2, col = "red")   # common rule-of-thumb cutoff
+abline(h = 3 * mean_lev, lty = 2, col = "blue")  # more extreme cutoff
+
+# highlight high leverage points
+points(high_lev_idx, lev[high_lev_idx], pch = 19, col = "red")
+if (length(very_high_lev_idx) > 0) {
+  points(very_high_lev_idx, lev[very_high_lev_idx], pch = 19, col = "blue")
+}
+```
+
+
+Most cars have relatively low leverage, but a non-trivial subset lies above the 2×mean and 3×mean reference lines, indicating observations whose combinations of predictors are unusual in this dataset. These high-leverage points correspond to relatively rare models such as sporty BMW and FIAT coupes and older Nissan 200SX entries. While high leverage alone does not imply a bad data point, these cars have the potential to strongly affect coefficient estimates and should be kept in mind when interpreting the fitted model.
+
+
+```{r}
+# outliers
+stud_res <- rstudent(mod_full)
+reg_outlier_idx <- which(abs(stud_res) > 3)
+regression_outliers <- dat[reg_outlier_idx, ]
+```
+
+
+```{r}
+# ---- Visualization: Outliers (studentized residuals) ----
+plot(
+  fitted(mod_full),
+  stud_res,
+  xlab = "Fitted values",
+  ylab = "Studentized residuals",
+  main = "Studentized residuals vs fitted values",
+  pch = 20
+)
+abline(h = 0, lty = 1)                 # reference line
+abline(h = c(-3, 3), lty = 2, col = "red")  # outlier cutoff
+
+# highlight outliers
+points(
+  fitted(mod_full)[reg_outlier_idx],
+  stud_res[reg_outlier_idx],
+  pch = 19,
+  col = "red"
+)
+
+# indices of the most extreme studentized residuals (top 5 by magnitude)
+extreme_res_idx <- order(abs(stud_res), decreasing = TRUE)[1:5]
+
+# label them on the plot: positive -> label below, negative -> label above
+text(
+  x = fitted(mod_full)[extreme_res_idx],
+  y = stud_res[extreme_res_idx],
+  labels = extreme_res_idx,
+  pos = ifelse(stud_res[extreme_res_idx] > 0, 1, 3),  # 1 = below, 3 = above
+  cex = 0.7
+)
+
+# print the rows these points correspond to
+cat("\nRows with most extreme studentized residuals:\n")
+print(dat[extreme_res_idx, ])
+```
+
+```{r}
+# influential points
+cooks <- cooks.distance(mod_full)
+n <- nrow(dat)
+p <- length(coef(mod_full)) - 1   # number of predictors
+
+cook_cut <- 4 / (n - p - 1)
+influential_idx <- which(cooks > cook_cut)
+influential_points <- dat[influential_idx, ]
+```
+
+
+The residual plot shows that most fitted values have studentized residuals between -3 and 3, suggesting the linear model fits the bulk of the data reasonably well. However, a small number of points—most notably several Toyota Previa minivans and Honda Accord trims (labels 7661-7662 and 1282/1285/1286)—have extremely large negative residuals, with observed MSRPs far below what the model predicts. These records may reflect data-entry issues (e.g., heavily discounted or used vehicles recorded as new) or cars that are systematically underpriced relative to their features, and they warrant closer inspection or sensitivity analysis.
+
+
+```{r}
+# ---- Visualization: Influence (Cook's distance) ----
+plot(
+  cooks,
+  type = "h",
+  xlab = "Observation index",
+  ylab = "Cook's distance",
+  main = "Influence of observations (Cook's distance)"
+)
+abline(h = cook_cut, lty = 2, col = "red")  # rule-of-thumb cutoff
+
+# highlight influential points
+points(influential_idx, cooks[influential_idx], pch = 19, col = "red")
+
+# indices of the largest Cook's distances (top 5)
+top_cook_idx <- order(cooks, decreasing = TRUE)[1:5]
+
+# label them on the plot
+text(
+  x = top_cook_idx,
+  y = cooks[top_cook_idx],
+  labels = top_cook_idx,
+  pos = ifelse(cooks[top_cook_idx] > 0.6, 4, 3),
+  cex = 0.7
+)
+
+# print the rows these points correspond to
+cat("\nRows with largest Cook's distance:\n")
+print(dat[top_cook_idx, ])
+```
+
+Cook’s distance is near zero for most cars, indicating that deleting any single one of these observations would not materially change the fitted model. In contrast, three Toyota Previa records (7661-7663), along with a Mazda CX-9 (3419) and a BMW M4 (6610), have much larger Cook’s distances and are highly influential. Because these influential points are also associated with atypical MSRPs given their features, our substantive conclusions about how car characteristics relate to price should be checked for robustness to removing or down-weighting these specific observations.
+
+```{r}
+# Simple baseline linear model
+
+mod_base <- lm(
+  MSRP ~ factor(Make) + factor(Year) + Engine.HP,
+  data = dat_clean
+)
+
+summary(mod_base)
+```
+
+We use Make, Year, and Engine.HP to form a simple baseline model because they capture the main structural drivers of MSRP: brand positioning, model-year effects, and basic performance. This small set keeps the model interpretable and avoids the long, crowded output that comes from including many correlated or highly categorical variables.
+
+The baseline model explains a large share of MSRP variation (adjusted $R^2$ = 0.83). Horsepower has a strong positive effect, and price differences across brands and years follow expected patterns—luxury makes and newer model years are consistently more expensive. Overall, the model gives a clear, interpretable first look at how brand, year, and performance relate to price.
+
+## Future Steps
+Going forward, we can build on both the baseline and full models in several ways. First, the diagnostic results (e.g., high-leverage FIAT/BMW coupes, large-residual Toyota Previa entries, and highly influential points such as the Mazda CX-9 and BMW M4) suggest that robustness checks—including refitting models with influential observations removed—would help assess the stability of our conclusions. Second, because several predictors are highly imbalanced (e.g., Market.Category, Transmission.Type), it may be beneficial to collapse rare categories or explore regularization methods (ridge/LASSO) to prevent overfitting in the full model. Third, interactions among performance and body-style variables or nonlinear relationships (e.g., log-transformed MSRP) could reveal richer structure not captured by main effects alone. Finally, comparing predictive performance across alternative models through cross-validation would help determine whether the simpler baseline model is adequate or whether the expanded feature set substantially improves accuracy.
